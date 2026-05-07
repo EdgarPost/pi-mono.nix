@@ -47,6 +47,25 @@ let
   wrapperArgs = lib.concatMapStringsSep " " lib.escapeShellArg resourceArgs;
   extraFlagsArgs = lib.concatMapStringsSep " " lib.escapeShellArg cfg.extraFlags;
 
+  # Build install commands for declared packages
+  packageInstallCommands = lib.concatMapStringsSep "\n" (
+    pkg: let
+      prefix = if pkg.type == "git" then "git:" else "npm:";
+    in
+      ''
+        if ! ${lib.escapeShellArg (lib.getExe cfg.package)} list 2>/dev/null | grep -qF "${pkg.source}"; then
+          echo "Installing ${pkg.source}..."
+          ${lib.escapeShellArg (lib.getExe cfg.package)} install ${prefix}${pkg.source}
+        fi
+      ''
+  ) cfg.packages;
+
+  installScript = pkgs.writeShellScriptBin "pi-install-packages" ''
+    set -e
+    mkdir -p "$HOME/.pi/agent"
+    ${packageInstallCommands}
+  '';
+
   wrappedPackage =
     if resourceArgs == [ ] && cfg.environment == null && cfg.extraFlags == [ ] then
       cfg.package
@@ -194,6 +213,39 @@ in
         }
       '';
     };
+
+    packages = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          source = lib.mkOption {
+            type = lib.types.str;
+            description = ''
+              Package source to install via `pi install`.
+              Examples: "npm:pi-subagents", "npm:@foo/bar", "git:github.com/user/repo".
+            '';
+          };
+          type = lib.mkOption {
+            type = lib.types.enum [ "npm" "git" ];
+            default = "npm";
+            description = "Type of package source.";
+          };
+        };
+      });
+      default = [ ];
+      description = ''
+        List of pi packages to install. Each entry specifies a source and type.
+        Packages are installed via `pi install` and persisted in
+        `~/.pi/settings.json` so pi auto-discovers their extensions, skills,
+        themes, and prompt-templates.
+      '';
+      example = lib.literalExpression ''
+        [
+          { source = "npm:pi-subagents"; }
+          { source = "npm:@foo/my-extension"; }
+          { source = "git:github.com/user/repo"; type = "git"; }
+        ]
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable (
@@ -256,6 +308,37 @@ in
               map (name: {
                 inherit name;
                 value.rules = rules;
+              }) cfg.users
+            );
+          })
+        ]
+      ))
+
+      (lib.mkIf (cfg.packages != [ ]) (
+        let
+          packageInstallService = name: {
+            description = "pi - install declared packages for ${name}";
+            wantedBy = [ "default.target" ];
+            wants = [ "graphical-session.target" ];
+            after = [ "graphical-session.target" ];
+            serviceConfig = {
+              Type = "oneshot";
+              ExecStart = "${lib.getExe installScript}";
+              # Only run once per session; systemd-remains-after=yes keeps it alive
+              # but oneshot with RemainAfterExit means it won't re-run
+              RemainAfterExit = "yes";
+            };
+          };
+        in
+        lib.mkMerge [
+          (lib.mkIf (cfg.users == [ ]) {
+            systemd.user.services.pi-install-packages = packageInstallService "all";
+          })
+          (lib.mkIf (cfg.users != [ ]) {
+            systemd.user.services = builtins.listToAttrs (
+              map (name: {
+                inherit name;
+                value = packageInstallService name;
               }) cfg.users
             );
           })

@@ -78,6 +78,13 @@ nix build .#coding-agent
     #   OPENAI_API_KEY = config.age.secrets.openai.path;
     # };
     # environment = ./pi.env;
+
+    # npm/git packages to install via `pi install`
+    # packages = [
+    #   { source = "npm:pi-subagents"; }
+    #   { source = "npm:@foo/my-extension"; }
+    #   { source = "git:github.com/user/repo"; type = "git"; }
+    # ];
   };
 }
 ```
